@@ -1,0 +1,9 @@
+# Normalize text files to LF in the repo
+* text=auto eol=lf
+
+# LaTeX build artifacts — don't treat as text if tracked
+*.aux binary
+*.nav binary
+*.out binary
+*.toc binary
+*.vrb binary
